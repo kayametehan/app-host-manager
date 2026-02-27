@@ -48,7 +48,7 @@ if (Test-Path $installDir) {
 # Repo klonla
 Write-Host ""
 Write-Host "GitHub'dan indiriliyor..." -ForegroundColor Yellow
-git clone https://github.com/KULLANICI_ADINIZ/app-host-manager.git $installDir
+git clone https://github.com/kayametehan/app-host-manager.git $installDir
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "✗ GitHub'dan indirme başarısız!" -ForegroundColor Red

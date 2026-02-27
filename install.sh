@@ -50,7 +50,7 @@ fi
 # Repo klonla
 echo ""
 echo "GitHub'dan indiriliyor..."
-git clone https://github.com/KULLANICI_ADINIZ/app-host-manager.git "$INSTALL_DIR"
+git clone https://github.com/kayametehan/app-host-manager.git "$INSTALL_DIR"
 
 # Dizine geç
 cd "$INSTALL_DIR"

@@ -18,13 +18,13 @@ Web arayüzlü uygulama host yöneticisi. GitHub'dan otomatik kurulum, ortam de�
 ### Windows (PowerShell - Yönetici olarak çalıştırın)
 
 ```powershell
-irm https://raw.githubusercontent.com/KULLANICI_ADINIZ/app-host-manager/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/kayametehan/app-host-manager/main/install.ps1 | iex
 ```
 
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/KULLANICI_ADINIZ/app-host-manager/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/kayametehan/app-host-manager/main/install.sh | bash
 ```
 
 ## 📦 Manuel Kurulum
@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/KULLANICI_ADINIZ/app-host-manager/m
 ### Adımlar
 
 ```bash
-git clone https://github.com/KULLANICI_ADINIZ/app-host-manager.git
+git clone https://github.com/kayametehan/app-host-manager.git
 cd app-host-manager
 npm install
 npm start
