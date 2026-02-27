@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>App Host Manager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3/css/xterm.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="layout">
+    <header class="header">
+      <h1 class="logo">App Host Manager</h1>
+      <p class="tagline">GitHub reposunu ekle, otomatik kurulsun ve çalışsın</p>
+    </header>
+
+    <section class="stats-section card">
+      <h2>Sistem</h2>
+      <div id="systemStats" class="stats-grid">
+        <div class="stat-item stat-item-main">
+          <span class="stat-label">Bellek (sistem)</span>
+          <span id="statMemory" class="stat-value stat-percent">--</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">CPU yükü (1 dk)</span>
+          <span id="statLoad" class="stat-value">--</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Çalışma süresi</span>
+          <span id="statUptime" class="stat-value">--</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Sunucu</span>
+          <span id="statHost" class="stat-value">--</span>
+        </div>
+      </div>
+      <div id="appsStats" class="apps-stats">
+        <h3 class="apps-stats-title">Uygulama kullanımı</h3>
+        <div id="appsStatsList" class="apps-stats-list"></div>
+        <div id="appsStatsTotal" class="apps-stats-total"></div>
+      </div>
+    </section>
+
+    <section class="add-section card">
+      <h2>Yeni uygulama ekle</h2>
+      <p>GitHub deposu URL'sini yapıştırın (örn: https://github.com/kullanici/repo)</p>
+      <form id="addForm" class="form">
+        <input
+          type="url"
+          id="githubUrl"
+          placeholder="https://github.com/..."
+          required
+          autocomplete="off"
+        />
+        <button type="submit" id="addBtn">Ekle ve çalıştır</button>
+      </form>
+      <div id="addError" class="error" aria-live="polite"></div>
+      <div id="addSuccess" class="success" aria-live="polite"></div>
+    </section>
+
+    <section class="apps-section">
+      <h2>Uygulamalar</h2>
+      <div id="appsList" class="apps-grid"></div>
+      <p id="emptyState" class="empty-state">Henüz uygulama yok. Yukarıdan bir GitHub linki ekleyin.</p>
+    </section>
+  </div>
+
+  <div id="logsModal" class="modal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="logsTitle">Loglar</h3>
+        <button type="button" class="modal-close" aria-label="Kapat">&times;</button>
+      </div>
+      <pre id="logsBody" class="logs-body"></pre>
+      <div class="modal-footer">
+        <button type="button" id="refreshLogs">Yenile</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="configModal" class="modal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-content modal-content-wide">
+      <div class="modal-header">
+        <h3 id="configTitle">Config & Ortam</h3>
+        <button type="button" class="config-modal-close modal-close" aria-label="Kapat">&times;</button>
+      </div>
+      <div class="config-tabs">
+        <button type="button" class="config-tab active" data-tab="env">Ortam değişkenleri (API anahtarları vb.)</button>
+        <button type="button" class="config-tab" data-tab="files">Config dosyaları</button>
+      </div>
+      <div id="configTabEnv" class="config-tab-panel">
+        <div class="config-docker-toggle">
+          <label><input type="checkbox" id="configUseDocker" /> Docker sandbox kullan (repoda Dockerfile olmalı; uygulama izole çalışır)</label>
+        </div>
+        <div class="config-start-command">
+          <label class="config-label">Başlatma komutu</label>
+          <input type="text" id="configStartCommand" class="config-start-input" placeholder="Örn: npm start, python web.py, venv/bin/python bot.py (Telegram bot için)" />
+          <button type="button" id="configStartCommandSave" class="btn btn-ghost btn-sm">Kaydet</button>
+        </div>
+        <p id="configSuggestedHint" class="config-hint config-hint-success"></p>
+        <p class="config-hint">Uygulama başlatılırken bu değişkenler ortama eklenir. Değişiklikten sonra uygulamayı yeniden başlatın.</p>
+        <div id="envEditor" class="env-editor"></div>
+        <div class="config-actions">
+          <button type="button" id="envAddRow" class="btn btn-ghost">+ Satır ekle</button>
+          <button type="button" id="envSave" class="btn btn-primary">Kaydet</button>
+        </div>
+      </div>
+      <div id="configTabFiles" class="config-tab-panel" hidden>
+        <p class="config-hint">Repoda bulunan config dosyalarını düzenleyebilirsiniz.</p>
+        <div id="configFileList" class="config-file-list"></div>
+        <div id="configFileEditor" class="config-file-editor" hidden>
+          <label class="config-file-name" id="configFileName"></label>
+          <textarea id="configFileContent" class="config-file-textarea" spellcheck="false"></textarea>
+          <div class="config-actions">
+            <button type="button" id="configFileSave" class="btn btn-primary">Dosyayı kaydet</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="terminalModal" class="modal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-content modal-content-wide modal-content-tall">
+      <div class="modal-header">
+        <h3 id="terminalTitle">Terminal</h3>
+        <button type="button" class="terminal-modal-close modal-close" aria-label="Kapat">&times;</button>
+      </div>
+      <div id="terminalContainer" class="terminal-container"></div>
+      <p id="terminalUnavailable" class="config-hint" hidden>Web terminal bu sistemde kullanılamıyor (node-pty gerekli).</p>
+    </div>
+  </div>
+
+  <div id="codeModal" class="modal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-content modal-content-wide modal-content-tall">
+      <div class="modal-header">
+        <h3 id="codeTitle">Kod</h3>
+        <button type="button" class="code-modal-close modal-close" aria-label="Kapat">&times;</button>
+      </div>
+      <div class="code-panel">
+        <div id="codeTree" class="code-tree"></div>
+        <div class="code-editor-wrap">
+          <div id="codeEditorEmpty" class="code-editor-empty">Dosya seçin</div>
+          <div id="codeEditorBox" class="code-editor-box" hidden>
+            <label class="config-file-name" id="codeFileName"></label>
+            <textarea id="codeFileContent" class="config-file-textarea code-file-textarea" spellcheck="false"></textarea>
+            <div class="config-actions">
+              <button type="button" id="codeFileSave" class="btn btn-primary">Kaydet</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
