@@ -104,6 +104,10 @@
         </div>
         <p id="configSuggestedHint" class="config-hint config-hint-success"></p>
         <p class="config-hint">Uygulama başlatılırken bu değişkenler ortama eklenir. Değişiklikten sonra uygulamayı yeniden başlatın.</p>
+        <div class="config-actions" style="margin-bottom: 10px;">
+          <input type="file" id="envFileInput" accept=".env,.txt" style="display: none;" />
+          <button type="button" id="envImportBtn" class="btn btn-ghost btn-sm">📁 .env Dosyası Yükle</button>
+        </div>
         <div id="envEditor" class="env-editor"></div>
         <div class="config-actions">
           <button type="button" id="envAddRow" class="btn btn-ghost">+ Satır ekle</button>

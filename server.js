@@ -519,6 +519,37 @@ app.put('/api/apps/:id/env', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/apps/:id/env/import', (req, res) => {
+  const apps = loadApps();
+  const appRecord = apps.find((a) => a.id === req.params.id);
+  if (!appRecord) return res.status(404).json({ error: 'Uygulama bulunamadı' });
+  
+  const envContent = req.body && req.body.content;
+  if (typeof envContent !== 'string') {
+    return res.status(400).json({ error: 'Geçersiz içerik' });
+  }
+  
+  const parsed = {};
+  envContent.split('\n').forEach(line => {
+    line = line.trim();
+    if (!line || line.startsWith('#')) return;
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (match) {
+      let value = match[2].trim();
+      // Tırnak işaretlerini kaldır
+      if ((value.startsWith('"') && value.endsWith('"')) || 
+          (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      parsed[match[1]] = value;
+    }
+  });
+  
+  appRecord.env = { ...appRecord.env, ...parsed };
+  saveApps(apps);
+  res.json({ ok: true, imported: Object.keys(parsed).length });
+});
+
 function resolveRepoPath(appId, relativePath) {
   const repoPath = path.join(REPOS_DIR, appId);
   const resolved = path.resolve(repoPath, relativePath || '.');

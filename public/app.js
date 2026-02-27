@@ -72,6 +72,16 @@ async function saveAppEnv(id, env) {
   if (!res.ok) throw new Error('Kaydedilemedi');
 }
 
+async function importEnvFile(id, content) {
+  const res = await fetch(API + '/apps/' + encodeURIComponent(id) + '/env/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) throw new Error('İçe aktarılamadı');
+  return res.json();
+}
+
 async function fetchConfigFiles(id) {
   const res = await fetch(API + '/apps/' + encodeURIComponent(id) + '/config-files');
   if (!res.ok) throw new Error('Dosya listesi alınamadı');
@@ -465,6 +475,28 @@ function addEnvRow() {
   renderEnvEditor(envRows);
 }
 
+async function handleEnvImport() {
+  if (!configAppId) return;
+  const fileInput = document.getElementById('envFileInput');
+  const file = fileInput.files[0];
+  if (!file) return;
+  
+  try {
+    const content = await file.text();
+    const result = await importEnvFile(configAppId, content);
+    alert(`${result.imported} ortam değişkeni içe aktarıldı!`);
+    
+    // Yeniden yükle
+    const env = await fetchAppEnv(configAppId);
+    envRows = envObjectToRows(env);
+    renderEnvEditor(envRows);
+    
+    fileInput.value = '';
+  } catch (e) {
+    alert('Hata: ' + e.message);
+  }
+}
+
 async function showConfigFilesTab() {
   if (!configAppId) return;
   const listEl = document.getElementById('configFileList');
@@ -620,6 +652,10 @@ document.querySelector('#codeModal .modal-backdrop').addEventListener('click', c
 document.getElementById('codeFileSave').addEventListener('click', handleCodeFileSave);
 document.getElementById('envAddRow').addEventListener('click', addEnvRow);
 document.getElementById('envSave').addEventListener('click', handleEnvSave);
+document.getElementById('envImportBtn').addEventListener('click', () => {
+  document.getElementById('envFileInput').click();
+});
+document.getElementById('envFileInput').addEventListener('change', handleEnvImport);
 document.getElementById('configFileSave').addEventListener('click', handleConfigFileSave);
 document.getElementById('configUseDocker').addEventListener('change', async function () {
   if (!configAppId) return;
