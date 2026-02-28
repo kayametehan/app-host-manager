@@ -156,7 +156,7 @@ async function runApp(appId, appRecord) {
     const imageTag = 'apphost-' + appId;
     const containerName = 'apphost-' + appId;
     try {
-      const build = spawn(docker, ['build', '-t', imageTag, '.'], { cwd: repoPath, shell: true });
+      const build = spawn(docker, ['build', '-t', imageTag, '.'], { cwd: repoPath });
       let buildErr = '';
       build.stderr.on('data', (d) => { buildErr += d; logLine('stderr', d); });
       build.stdout.on('data', (d) => logLine('stdout', d));
@@ -166,14 +166,14 @@ async function runApp(appId, appRecord) {
       const envArgs = [];
       Object.entries(appRecord.env || {}).forEach(([k, v]) => envArgs.push('-e', `${k}=${v}`));
       envArgs.push('-e', 'PORT=' + port);
-      const run = spawn(docker, ['run', '-d', '--name', containerName, '-p', port + ':' + port, ...envArgs, imageTag], { shell: true });
+      const run = spawn(docker, ['run', '-d', '--name', containerName, '-p', port + ':' + port, ...envArgs, imageTag]);
       let runOut = '';
       run.stdout.on('data', (d) => { runOut += d.toString(); });
       run.stderr.on('data', (d) => logLine('stderr', d));
       await new Promise((resolve, reject) => {
         run.on('close', (c) => (c === 0 ? resolve() : reject(new Error('Docker run failed'))));
       });
-      const logTail = spawn(docker, ['logs', '-f', containerName], { shell: true });
+      const logTail = spawn(docker, ['logs', '-f', containerName]);
       logTail.stdout.on('data', (d) => logLine('stdout', d));
       logTail.stderr.on('data', (d) => logLine('stderr', d));
       runningProcesses.set(appId, { containerId: containerName, logStream, logTail });
@@ -192,10 +192,10 @@ async function runApp(appId, appRecord) {
   if (customCmd) {
     const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
     const flag = process.platform === 'win32' ? '/c' : '-c';
-    child = spawn(shell, [flag, appRecord.startCommand.trim()], { cwd, env, shell: true });
+    child = spawn(shell, [flag, appRecord.startCommand.trim()], { cwd, env });
   } else if (detected.type === 'node') {
     const [cmd, ...args] = detected.runCommand || [process.platform === 'win32' ? 'npm.cmd' : 'npm', 'start'];
-    child = spawn(cmd, args, { cwd, env, shell: true });
+    child = spawn(cmd, args, { cwd, env });
   } else if (detected.type === 'python') {
     const venvPath = path.join(repoPath, 'venv');
     const py = process.platform === 'win32'
@@ -212,12 +212,12 @@ async function runApp(appId, appRecord) {
     }
     updateAppMainFile(appRecord.id, mainFile);
     if (fs.existsSync(py)) {
-      child = spawn(py, [mainFile], { cwd, env, shell: true });
+      child = spawn(py, [mainFile], { cwd, env });
     } else {
-      child = spawn(process.platform === 'win32' ? 'python' : 'python3', [mainFile], { cwd, env, shell: true });
+      child = spawn(process.platform === 'win32' ? 'python' : 'python3', [mainFile], { cwd, env });
     }
   } else if (detected.type === 'go') {
-    child = spawn(process.platform === 'win32' ? 'go.exe' : 'go', ['run', '.'], { cwd, env, shell: true });
+    child = spawn(process.platform === 'win32' ? 'go.exe' : 'go', ['run', '.'], { cwd, env });
   } else {
     return { ok: false, error: 'Desteklenmeyen proje tipi' };
   }
@@ -240,7 +240,7 @@ function stopApp(appId) {
   if (!entry) return { ok: false, error: 'Çalışan process yok' };
   if (entry.containerId) {
     if (entry.logTail) entry.logTail.kill('SIGTERM');
-    spawn(process.platform === 'win32' ? 'docker.exe' : 'docker', ['stop', entry.containerId], { shell: true }).on('close', () => {});
+    spawn(process.platform === 'win32' ? 'docker.exe' : 'docker', ['stop', entry.containerId]).on('close', () => {});
   } else if (entry.process) {
     entry.process.kill('SIGTERM');
   }
@@ -300,7 +300,6 @@ app.post('/api/apps', async (req, res) => {
       await new Promise((resolve, reject) => {
         const npm = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install'], {
           cwd: repoPath,
-          shell: true,
         });
         npm.on('close', (c) => (c === 0 ? resolve() : reject(new Error('npm install failed'))));
         npm.on('error', reject);
@@ -317,7 +316,7 @@ app.post('/api/apps', async (req, res) => {
       try {
         await new Promise((resolve, reject) => {
           const py = process.platform === 'win32' ? 'python' : 'python3';
-          const child = spawn(py, ['-m', 'venv', 'venv'], { cwd: repoPath, shell: true });
+          const child = spawn(py, ['-m', 'venv', 'venv'], { cwd: repoPath });
           child.on('close', (c) => (c === 0 ? resolve() : reject(new Error('venv failed'))));
           child.on('error', reject);
         });
@@ -326,7 +325,7 @@ app.post('/api/apps', async (req, res) => {
           : path.join(venvPath, 'bin', 'pip');
         if (fs.existsSync(pip)) {
           await new Promise((resolve, reject) => {
-            const child = spawn(pip, ['install', '-r', 'requirements.txt'], { cwd: repoPath, shell: true });
+            const child = spawn(pip, ['install', '-r', 'requirements.txt'], { cwd: repoPath });
             child.on('close', (c) => (c === 0 ? resolve() : reject(new Error('pip failed'))));
             child.on('error', reject);
           });
