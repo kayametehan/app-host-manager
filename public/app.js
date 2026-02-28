@@ -45,6 +45,13 @@ async function deleteApp(id) {
   if (!res.ok) throw new Error('Silinemedi');
 }
 
+async function updateApp(id) {
+  const res = await fetch(API + '/apps/' + encodeURIComponent(id) + '/update', { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Güncellenemedi');
+  return data;
+}
+
 async function fetchLogs(id) {
   const res = await fetch(API + '/apps/' + encodeURIComponent(id) + '/logs');
   if (!res.ok) throw new Error('Loglar alınamadı');
@@ -158,6 +165,7 @@ function renderApps(apps) {
           <button type="button" class="btn btn-ghost terminal-btn" data-id="${escapeHtml(app.id)}" data-name="${escapeHtml(app.name)}" title="Terminal">Terminal</button>
           <button type="button" class="btn btn-ghost config-btn" data-id="${escapeHtml(app.id)}" data-name="${escapeHtml(app.name)}" title="Config & API anahtarları">Config</button>
           <button type="button" class="btn btn-ghost logs-btn" data-id="${escapeHtml(app.id)}" data-name="${escapeHtml(app.name)}">Loglar</button>
+          <button type="button" class="btn btn-ghost update-btn" data-id="${escapeHtml(app.id)}" data-name="${escapeHtml(app.name)}" title="GitHub'dan güncelle (env korunur)">🔄 Güncelle</button>
           ${app.running
             ? `<button type="button" class="btn btn-danger stop-btn" data-id="${escapeHtml(app.id)}">Durdur</button>`
             : `<button type="button" class="btn btn-primary start-btn" data-id="${escapeHtml(app.id)}">Başlat</button>`
@@ -179,6 +187,9 @@ function renderApps(apps) {
   });
   list.querySelectorAll('.delete-btn').forEach((btn) => {
     btn.addEventListener('click', () => handleDelete(btn.dataset.id, btn.dataset.name));
+  });
+  list.querySelectorAll('.update-btn').forEach((btn) => {
+    btn.addEventListener('click', () => handleUpdate(btn.dataset.id, btn.dataset.name));
   });
   list.querySelectorAll('.config-btn').forEach((btn) => {
     btn.addEventListener('click', () => openConfigModal(btn.dataset.id, btn.dataset.name));
@@ -275,6 +286,17 @@ async function handleDelete(id, name) {
     loadApps();
   } catch (e) {
     alert(e.message);
+  }
+}
+
+async function handleUpdate(id, name) {
+  if (!confirm(`"${name}" uygulamasını GitHub'dan güncellemek istediğinize emin misiniz? Mevcut env değişkenleri korunacak.`)) return;
+  try {
+    const result = await updateApp(id);
+    alert(result.message || 'Güncelleme tamamlandı');
+    loadApps();
+  } catch (e) {
+    alert('Güncelleme hatası: ' + e.message);
   }
 }
 

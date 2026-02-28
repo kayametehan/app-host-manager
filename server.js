@@ -426,6 +426,94 @@ app.delete('/api/apps/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/apps/:id/update', async (req, res) => {
+  const apps = loadApps();
+  const appRecord = apps.find((a) => a.id === req.params.id);
+  if (!appRecord) return res.status(404).json({ error: 'Uygulama bulunamadı' });
+  
+  const repoPath = path.join(REPOS_DIR, appRecord.id);
+  if (!fs.existsSync(repoPath)) {
+    return res.status(404).json({ error: 'Repo dizini bulunamadı' });
+  }
+  
+  // Çalışıyorsa durdur
+  const wasRunning = runningProcesses.has(appRecord.id);
+  if (wasRunning) {
+    stopApp(appRecord.id);
+  }
+  
+  // Git pull
+  const git = simpleGit(repoPath);
+  try {
+    await git.pull();
+  } catch (err) {
+    return res.status(500).json({ error: 'Git pull hatası: ' + (err.message || String(err)) });
+  }
+  
+  // Proje tipini yeniden tespit et
+  const detected = detectProjectType(repoPath);
+  appRecord.type = detected.type;
+  if (detected.type === 'python' && detected.mainFile) {
+    appRecord.mainFile = detected.mainFile;
+  }
+  
+  // Bağımlılıkları güncelle
+  if (detected.type === 'node' && detected.hasInstall) {
+    try {
+      await new Promise((resolve, reject) => {
+        const npm = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install'], {
+          cwd: repoPath,
+        });
+        npm.on('close', (c) => (c === 0 ? resolve() : reject(new Error('npm install failed'))));
+        npm.on('error', reject);
+      });
+    } catch (e) {
+      // Devam et
+    }
+  }
+  
+  if (detected.type === 'python' && detected.hasInstall) {
+    const venvPath = path.join(repoPath, 'venv');
+    const reqPath = path.join(repoPath, 'requirements.txt');
+    if (fs.existsSync(venvPath) && fs.existsSync(reqPath)) {
+      try {
+        const pip = process.platform === 'win32'
+          ? path.join(venvPath, 'Scripts', 'pip.exe')
+          : path.join(venvPath, 'bin', 'pip');
+        if (fs.existsSync(pip)) {
+          await new Promise((resolve, reject) => {
+            const child = spawn(pip, ['install', '-r', 'requirements.txt'], { cwd: repoPath });
+            child.on('close', (c) => (c === 0 ? resolve() : reject(new Error('pip failed'))));
+            child.on('error', reject);
+          });
+        }
+      } catch {
+        // Devam et
+      }
+    }
+  }
+  
+  // Yeni env değişkenlerini tespit et ve mevcut değerleri koru
+  const newSuggestedKeys = suggestEnvKeys(repoPath);
+  const currentEnv = appRecord.env || {};
+  newSuggestedKeys.forEach(key => {
+    if (!(key in currentEnv)) {
+      currentEnv[key] = '';
+    }
+  });
+  appRecord.env = currentEnv;
+  
+  saveApps(apps);
+  
+  // Eğer çalışıyorsa tekrar başlat
+  if (wasRunning) {
+    const result = await runApp(appRecord.id, appRecord);
+    res.json({ ok: true, restarted: result.ok, message: 'Güncelleme tamamlandı' });
+  } else {
+    res.json({ ok: true, restarted: false, message: 'Güncelleme tamamlandı' });
+  }
+});
+
 // --- System stats ---
 const appsById = () => {
   const list = loadApps();
