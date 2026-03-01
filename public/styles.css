@@ -175,6 +175,21 @@ body {
   margin-bottom: 1rem;
 }
 
+.env-file-upload {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.env-file-upload input[type="file"] {
+  margin-right: 0.5rem;
+  margin-bottom: 0.5rem;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
 .config-label {
   display: block;
   font-size: 0.9rem;

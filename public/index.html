@@ -102,6 +102,11 @@
           <input type="text" id="configStartCommand" class="config-start-input" placeholder="Örn: npm start, python web.py, venv/bin/python bot.py (Telegram bot için)" />
           <button type="button" id="configStartCommandSave" class="btn btn-ghost btn-sm">Kaydet</button>
         </div>
+        <div class="env-file-upload">
+          <label class="config-label">.env dosyası yükle</label>
+          <input type="file" id="envFileInput" accept=".env,.txt" />
+          <button type="button" id="envFileLoad" class="btn btn-ghost btn-sm">Yükle ve ekle</button>
+        </div>
         <p id="configSuggestedHint" class="config-hint config-hint-success"></p>
         <p class="config-hint">Uygulama başlatılırken bu değişkenler ortama eklenir. Değişiklikten sonra uygulamayı yeniden başlatın.</p>
         <div id="envEditor" class="env-editor"></div>

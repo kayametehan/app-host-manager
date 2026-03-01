@@ -460,6 +460,42 @@ function addEnvRow() {
   renderEnvEditor(envRows);
 }
 
+function handleEnvFileLoad() {
+  const fileInput = document.getElementById('envFileInput');
+  const file = fileInput.files[0];
+  if (!file) {
+    alert('Lütfen bir .env dosyası seçin');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const content = e.target.result;
+    const lines = content.split('\n');
+    lines.forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) return;
+      const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+      if (match) {
+        const key = match[1];
+        let value = match[2].trim();
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.slice(1, -1);
+        }
+        const existing = envRows.find((r) => r.key === key);
+        if (existing) {
+          existing.value = value;
+        } else {
+          envRows.push({ key, value });
+        }
+      }
+    });
+    renderEnvEditor(envRows);
+    alert('.env dosyası yüklendi. Kaydet butonuna basarak kaydedin.');
+    fileInput.value = '';
+  };
+  reader.readAsText(file);
+}
+
 async function showConfigFilesTab() {
   if (!configAppId) return;
   const listEl = document.getElementById('configFileList');
@@ -661,6 +697,7 @@ document.getElementById('codeFileSave').addEventListener('click', handleCodeFile
 document.getElementById('envAddRow').addEventListener('click', addEnvRow);
 document.getElementById('envSave').addEventListener('click', handleEnvSave);
 document.getElementById('configFileSave').addEventListener('click', handleConfigFileSave);
+document.getElementById('envFileLoad').addEventListener('click', handleEnvFileLoad);
 document.getElementById('configUseDocker').addEventListener('change', async function () {
   if (!configAppId) return;
   try {
