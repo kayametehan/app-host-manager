@@ -1,5 +1,8 @@
 node_modules/
-data/
+data/repos/
+data/logs_*.txt
+data/apps.json
+data/installed-plugins.json
 *.log
 .env
 .DS_Store

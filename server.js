@@ -13,13 +13,6 @@ const { spawn } = require('child_process');
 const simpleGit = require('simple-git');
 const WebSocket = require('ws');
 
-let pty;
-try {
-  pty = require('node-pty');
-} catch {
-  pty = null;
-}
-
 let pidusage;
 try {
   pidusage = require('pidusage');
@@ -31,6 +24,9 @@ const PORT = process.env.PORT || 3840;
 const DATA_DIR = path.join(__dirname, 'data');
 const APPS_FILE = path.join(DATA_DIR, 'apps.json');
 const REPOS_DIR = path.join(DATA_DIR, 'repos');
+const MARKETPLACE_FILE = path.join(DATA_DIR, 'marketplace.json');
+const INSTALLED_PLUGINS_FILE = path.join(DATA_DIR, 'installed-plugins.json');
+const TEMPLATES_FILE = path.join(DATA_DIR, 'templates.json');
 
 // Çalışan process veya container (id -> { process?, containerId?, logStream? })
 const runningProcesses = new Map();
@@ -46,6 +42,7 @@ function ensureDirs() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(REPOS_DIR)) fs.mkdirSync(REPOS_DIR, { recursive: true });
   if (!fs.existsSync(APPS_FILE)) fs.writeFileSync(APPS_FILE, '[]', 'utf8');
+  if (!fs.existsSync(INSTALLED_PLUGINS_FILE)) fs.writeFileSync(INSTALLED_PLUGINS_FILE, '[]', 'utf8');
 }
 
 function loadApps() {
@@ -106,7 +103,24 @@ function detectProjectType(repoPath) {
   const requirementsPath = path.join(repoPath, 'requirements.txt');
   const pyProjectPath = path.join(repoPath, 'pyproject.toml');
   const goModPath = path.join(repoPath, 'go.mod');
+  const dockerfilePath = path.join(repoPath, 'Dockerfile');
+  const dockerComposePath = path.join(repoPath, 'docker-compose.yml');
+  const dockerComposeAltPath = path.join(repoPath, 'docker-compose.yaml');
+  const composerPath = path.join(repoPath, 'composer.json');
+  const gemfilePath = path.join(repoPath, 'Gemfile');
+  const cargoPath = path.join(repoPath, 'Cargo.toml');
 
+  // Docker Compose has highest priority for complex apps
+  if (fs.existsSync(dockerComposePath) || fs.existsSync(dockerComposeAltPath)) {
+    return { type: 'docker-compose', hasInstall: false, requiresDocker: true };
+  }
+
+  // Dockerfile-only projects
+  if (fs.existsSync(dockerfilePath)) {
+    return { type: 'docker', hasInstall: false, requiresDocker: true };
+  }
+
+  // Node.js projects
   if (fs.existsSync(pkgPath)) {
     try {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
@@ -120,13 +134,33 @@ function detectProjectType(repoPath) {
       return { type: 'node', runCommand: [process.platform === 'win32' ? 'node.exe' : 'node', 'index.js'], hasInstall: true };
     }
   }
+
+  // Python projects
   if (fs.existsSync(requirementsPath) || fs.existsSync(pyProjectPath)) {
     const mainPy = findPythonEntryPoint(repoPath);
     return { type: 'python', mainFile: mainPy, hasInstall: true };
   }
+
+  // PHP projects (Composer)
+  if (fs.existsSync(composerPath)) {
+    return { type: 'php', hasInstall: true };
+  }
+
+  // Ruby projects
+  if (fs.existsSync(gemfilePath)) {
+    return { type: 'ruby', hasInstall: true };
+  }
+
+  // Rust projects
+  if (fs.existsSync(cargoPath)) {
+    return { type: 'rust', hasInstall: true };
+  }
+
+  // Go projects
   if (fs.existsSync(goModPath)) {
     return { type: 'go', hasInstall: true };
   }
+
   return { type: 'unknown' };
 }
 
@@ -147,6 +181,24 @@ async function runApp(appId, appRecord) {
     const tag = stream === 'stderr' ? '[stderr]' : '[stdout]';
     const lines = data.toString().split('\n').filter((l) => l.length > 0);
     lines.forEach((line) => logStream.write(ts + ' ' + tag + ' ' + line + '\n'));
+  }
+
+  // Check if Docker is required and available
+  const needsDocker = appRecord.useDocker || detected.type === 'docker-compose' || detected.type === 'docker';
+  
+  if (needsDocker) {
+    // Check if Docker is running
+    const dockerCheck = await checkDockerAvailable();
+    if (!dockerCheck.available) {
+      logStream.write(new Date().toISOString() + ' [system] Docker not available: ' + dockerCheck.error + '\n');
+      logStream.end();
+      return { 
+        ok: false, 
+        error: 'Docker gerekli ama çalışmıyor. Docker Desktop\'ı başlatın ve tekrar deneyin.',
+        dockerError: true,
+        details: dockerCheck.error
+      };
+    }
   }
 
   // Docker sandbox: repoda Dockerfile varsa ve useDocker açıksa container'da çalıştır
@@ -181,7 +233,7 @@ async function runApp(appId, appRecord) {
     } catch (err) {
       logStream.write(new Date().toISOString() + ' [system] Docker error: ' + err.message + '\n');
       logStream.end();
-      return { ok: false, error: err.message };
+      return { ok: false, error: err.message, dockerError: true };
     }
   }
 
@@ -193,6 +245,32 @@ async function runApp(appId, appRecord) {
     const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
     const flag = process.platform === 'win32' ? '/c' : '-c';
     child = spawn(shell, [flag, appRecord.startCommand.trim()], { cwd, env });
+  } else if (detected.type === 'docker-compose') {
+    // Docker Compose projects
+    const docker = process.platform === 'win32' ? 'docker-compose.exe' : 'docker-compose';
+    const envArgs = [];
+    Object.entries(appRecord.env || {}).forEach(([k, v]) => envArgs.push('-e', `${k}=${v}`));
+    child = spawn(docker, ['up', ...envArgs], { cwd, env });
+    logStream.write(new Date().toISOString() + ' [system] Starting with docker-compose up\n');
+    
+    // Mark as docker-compose for proper cleanup
+    child.on('close', (code) => {
+      runningProcesses.delete(appId);
+      const ts = new Date().toISOString();
+      logStream.write(ts + ' [system] Docker Compose exited with code ' + code + '\n');
+      logStream.end();
+    });
+    
+    child.stdout.on('data', (data) => logLine('stdout', data));
+    child.stderr.on('data', (data) => logLine('stderr', data));
+    
+    runningProcesses.set(appId, { process: child, logStream, isDockerCompose: true });
+    return { ok: true, port };
+  } else if (detected.type === 'docker') {
+    // Dockerfile-only projects (already handled above with useDocker flag)
+    // If we reach here, user hasn't enabled Docker, suggest it
+    logStream.end();
+    return { ok: false, error: 'Bu proje Docker gerektirir. Ayarlar sekmesinden "Docker sandbox kullan" seçeneğini aktifleştirin.' };
   } else if (detected.type === 'node') {
     const [cmd, ...args] = detected.runCommand || [process.platform === 'win32' ? 'npm.cmd' : 'npm', 'start'];
     child = spawn(cmd, args, { cwd, env });
@@ -216,10 +294,26 @@ async function runApp(appId, appRecord) {
     } else {
       child = spawn(process.platform === 'win32' ? 'python' : 'python3', [mainFile], { cwd, env });
     }
+  } else if (detected.type === 'php') {
+    // PHP projects with Composer
+    child = spawn('php', ['-S', `localhost:${port}`, '-t', 'public'], { cwd, env });
+  } else if (detected.type === 'ruby') {
+    // Ruby projects
+    child = spawn('bundle', ['exec', 'rails', 'server', '-p', String(port)], { cwd, env });
+  } else if (detected.type === 'rust') {
+    // Rust projects
+    child = spawn('cargo', ['run'], { cwd, env });
   } else if (detected.type === 'go') {
     child = spawn(process.platform === 'win32' ? 'go.exe' : 'go', ['run', '.'], { cwd, env });
+  } else if (detected.type === 'unknown') {
+    logStream.end();
+    return { 
+      ok: false, 
+      error: 'Desteklenmeyen proje tipi. Lütfen Ayarlar sekmesinden özel başlatma komutu girin veya Docker kullanın.' 
+    };
   } else {
-    return { ok: false, error: 'Desteklenmeyen proje tipi' };
+    logStream.end();
+    return { ok: false, error: 'Desteklenmeyen proje tipi: ' + detected.type };
   }
 
   child.stdout.on('data', (data) => logLine('stdout', data));
@@ -235,15 +329,62 @@ async function runApp(appId, appRecord) {
   return { ok: true, port };
 }
 
+// Check if Docker is available
+async function checkDockerAvailable() {
+  return new Promise((resolve) => {
+    const docker = process.platform === 'win32' ? 'docker.exe' : 'docker';
+    const check = spawn(docker, ['info'], { timeout: 3000 });
+    
+    let hasOutput = false;
+    check.stdout.on('data', () => { hasOutput = true; });
+    
+    check.on('close', (code) => {
+      if (code === 0 && hasOutput) {
+        resolve({ available: true });
+      } else {
+        resolve({ 
+          available: false, 
+          error: 'Docker daemon çalışmıyor. Docker Desktop\'ı başlatın.' 
+        });
+      }
+    });
+    
+    check.on('error', (err) => {
+      resolve({ 
+        available: false, 
+        error: 'Docker kurulu değil veya PATH\'de bulunamadı: ' + err.message 
+      });
+    });
+    
+    setTimeout(() => {
+      check.kill();
+      resolve({ 
+        available: false, 
+        error: 'Docker yanıt vermiyor. Docker Desktop\'ı başlatın ve birkaç saniye bekleyin.' 
+      });
+    }, 5000);
+  });
+}
+
 function stopApp(appId) {
   const entry = runningProcesses.get(appId);
   if (!entry) return { ok: false, error: 'Çalışan process yok' };
+  
   if (entry.containerId) {
+    // Docker container
     if (entry.logTail) entry.logTail.kill('SIGTERM');
     spawn(process.platform === 'win32' ? 'docker.exe' : 'docker', ['stop', entry.containerId]).on('close', () => {});
+  } else if (entry.isDockerCompose) {
+    // Docker Compose
+    const repoPath = path.join(REPOS_DIR, appId);
+    const docker = process.platform === 'win32' ? 'docker-compose.exe' : 'docker-compose';
+    spawn(docker, ['down'], { cwd: repoPath }).on('close', () => {});
+    if (entry.process) entry.process.kill('SIGTERM');
   } else if (entry.process) {
+    // Regular process
     entry.process.kill('SIGTERM');
   }
+  
   if (entry.logStream && !entry.logStream.closed) entry.logStream.end();
   runningProcesses.delete(appId);
   return { ok: true };
@@ -267,7 +408,7 @@ app.get('/api/apps/:id', (req, res) => {
 });
 
 app.post('/api/apps', async (req, res) => {
-  const { githubUrl } = req.body || {};
+  const { githubUrl, autoDocker } = req.body || {};
   if (!githubUrl || typeof githubUrl !== 'string') {
     return res.status(400).json({ error: 'githubUrl gerekli' });
   }
@@ -295,6 +436,7 @@ app.post('/api/apps', async (req, res) => {
   const detected = detectProjectType(repoPath);
   const port = nextPort();
 
+  // Auto-install dependencies
   if (detected.type === 'node' && detected.hasInstall) {
     try {
       await new Promise((resolve, reject) => {
@@ -305,7 +447,7 @@ app.post('/api/apps', async (req, res) => {
         npm.on('error', reject);
       });
     } catch (e) {
-      // Kurulum hatası olsa da kaydediyoruz, kullanıcı manuel çalıştırabilir
+      // Continue even if install fails
     }
   }
 
@@ -331,17 +473,24 @@ app.post('/api/apps', async (req, res) => {
           });
         }
       } catch {
-        // venv/pip hata verse de kaydet
+        // Continue even if install fails
       }
     }
   }
 
-  // Otomatik ortam değişkenlerini tespit et ve boş olarak ekle
+  // Auto-detect env keys
   const suggestedKeys = suggestEnvKeys(repoPath);
   const autoEnv = {};
   suggestedKeys.forEach(key => {
     autoEnv[key] = '';
   });
+
+  // Auto-enable Docker for docker-compose or dockerfile projects
+  const shouldUseDocker = autoDocker === true || 
+                          detected.type === 'docker-compose' || 
+                          detected.type === 'docker' ||
+                          detected.requiresDocker === true ||
+                          fs.existsSync(path.join(repoPath, 'Dockerfile'));
 
   const newApp = {
     id: appId,
@@ -352,21 +501,25 @@ app.post('/api/apps', async (req, res) => {
     type: detected.type,
     env: autoEnv,
     startCommand: '',
-    useDocker: fs.existsSync(path.join(repoPath, 'Dockerfile')),
+    useDocker: shouldUseDocker,
     createdAt: new Date().toISOString(),
   };
+  
   if (detected.type === 'python' && detected.mainFile) newApp.mainFile = detected.mainFile;
+  
   apps.push(newApp);
   saveApps(apps);
 
-  // Ortam değişkenleri eksikse başlatma
   res.status(201).json({ 
     ...newApp, 
     running: false,
     needsEnvSetup: suggestedKeys.length > 0,
-    message: suggestedKeys.length > 0 
-      ? `Uygulama eklendi. Başlatmadan önce ortam değişkenlerini ayarlayın: ${suggestedKeys.join(', ')}`
-      : 'Uygulama eklendi ve başlatılabilir.'
+    autoDockerEnabled: shouldUseDocker,
+    message: shouldUseDocker 
+      ? 'Uygulama eklendi. Docker otomatik aktif edildi, direkt başlatabilirsiniz.'
+      : suggestedKeys.length > 0 
+        ? `Uygulama eklendi. Başlatmadan önce ortam değişkenlerini ayarlayın: ${suggestedKeys.join(', ')}`
+        : 'Uygulama eklendi ve başlatılabilir.'
   });
 });
 
@@ -539,7 +692,43 @@ app.get('/api/system/stats', async (req, res) => {
   if (pidusage) {
     for (const [appId, entry] of runningProcesses) {
       const pid = entry.process && entry.process.pid;
+      
+      // Eğer recovered bir process ise ve PID yoksa, port'tan PID bulmaya çalış
+      if (!pid && entry.recovered && entry.port) {
+        // Port'tan PID bulmak için lsof kullan (Unix sistemlerde)
+        try {
+          const { execSync } = require('child_process');
+          const cmd = process.platform === 'win32' 
+            ? `netstat -ano | findstr :${entry.port}` 
+            : `lsof -ti :${entry.port}`;
+          const output = execSync(cmd, { encoding: 'utf8' }).trim();
+          const foundPid = parseInt(output.split('\n')[0]);
+          
+          if (foundPid && !isNaN(foundPid)) {
+            // PID bulundu, istatistikleri al
+            const stat = await pidusage(foundPid);
+            const cpuPercent = Math.round((stat.cpu || 0) * 10) / 10;
+            const memBytes = stat.memory || 0;
+            const memPercent = totalMem ? Math.round((memBytes / totalMem) * 1000) / 10 : 0;
+            totalCpu += cpuPercent;
+            totalMemBytes += memBytes;
+            runningApps.push({
+              id: appId,
+              name: (appNames.get(appId) || {}).name || appId,
+              pid: foundPid,
+              cpuPercent,
+              memoryPercent: memPercent,
+              memoryBytes: memBytes,
+            });
+            continue;
+          }
+        } catch (e) {
+          // PID bulunamadı, devam et
+        }
+      }
+      
       if (!pid) continue;
+      
       try {
         const stat = await pidusage(pid);
         const cpuPercent = Math.round((stat.cpu || 0) * 10) / 10;
@@ -550,12 +739,20 @@ app.get('/api/system/stats', async (req, res) => {
         runningApps.push({
           id: appId,
           name: (appNames.get(appId) || {}).name || appId,
+          pid: pid,
           cpuPercent,
           memoryPercent: memPercent,
           memoryBytes: memBytes,
         });
       } catch {
-        runningApps.push({ id: appId, name: (appNames.get(appId) || {}).name || appId, cpuPercent: 0, memoryPercent: 0, memoryBytes: 0 });
+        runningApps.push({ 
+          id: appId, 
+          name: (appNames.get(appId) || {}).name || appId, 
+          pid: pid,
+          cpuPercent: 0, 
+          memoryPercent: 0, 
+          memoryBytes: 0 
+        });
       }
     }
   }
@@ -771,6 +968,136 @@ app.get('/api/terminal-available', (req, res) => {
   res.json({ available: true, type: 'system' });
 });
 
+app.get('/api/docker/status', async (req, res) => {
+  const status = await checkDockerAvailable();
+  res.json(status);
+});
+
+// --- Templates API ---
+app.get('/api/templates', (req, res) => {
+  try {
+    const templates = JSON.parse(fs.readFileSync(TEMPLATES_FILE, 'utf8'));
+    res.json(templates);
+  } catch (err) {
+    res.status(500).json({ error: 'Şablonlar yüklenemedi: ' + err.message });
+  }
+});
+
+// --- Marketplace API ---
+app.get('/api/marketplace/plugins', (req, res) => {
+  try {
+    const marketplace = JSON.parse(fs.readFileSync(MARKETPLACE_FILE, 'utf8'));
+    const installed = JSON.parse(fs.readFileSync(INSTALLED_PLUGINS_FILE, 'utf8'));
+    
+    // Mark installed plugins
+    const plugins = marketplace.map(plugin => ({
+      ...plugin,
+      installed: installed.some(p => p.id === plugin.id)
+    }));
+    
+    // Filter by category if provided
+    const category = req.query.category;
+    if (category && category !== 'all') {
+      res.json(plugins.filter(p => p.category === category));
+    } else {
+      res.json(plugins);
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Marketplace yüklenemedi: ' + err.message });
+  }
+});
+
+app.post('/api/marketplace/install/:id', (req, res) => {
+  try {
+    const marketplace = JSON.parse(fs.readFileSync(MARKETPLACE_FILE, 'utf8'));
+    const installed = JSON.parse(fs.readFileSync(INSTALLED_PLUGINS_FILE, 'utf8'));
+    
+    const plugin = marketplace.find(p => p.id === req.params.id);
+    if (!plugin) {
+      return res.status(404).json({ error: 'Eklenti bulunamadı' });
+    }
+    
+    if (installed.some(p => p.id === plugin.id)) {
+      return res.status(400).json({ error: 'Eklenti zaten kurulu' });
+    }
+    
+    // Install plugin
+    const installedPlugin = {
+      ...plugin,
+      installedAt: new Date().toISOString(),
+      enabled: true
+    };
+    
+    installed.push(installedPlugin);
+    fs.writeFileSync(INSTALLED_PLUGINS_FILE, JSON.stringify(installed, null, 2), 'utf8');
+    
+    res.json({ ok: true, plugin: installedPlugin });
+  } catch (err) {
+    res.status(500).json({ error: 'Kurulum başarısız: ' + err.message });
+  }
+});
+
+app.delete('/api/marketplace/uninstall/:id', (req, res) => {
+  try {
+    const installed = JSON.parse(fs.readFileSync(INSTALLED_PLUGINS_FILE, 'utf8'));
+    const filtered = installed.filter(p => p.id !== req.params.id);
+    
+    if (filtered.length === installed.length) {
+      return res.status(404).json({ error: 'Eklenti kurulu değil' });
+    }
+    
+    fs.writeFileSync(INSTALLED_PLUGINS_FILE, JSON.stringify(filtered, null, 2), 'utf8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Kaldırma başarısız: ' + err.message });
+  }
+});
+
+app.get('/api/marketplace/installed', (req, res) => {
+  try {
+    const installed = JSON.parse(fs.readFileSync(INSTALLED_PLUGINS_FILE, 'utf8'));
+    res.json(installed);
+  } catch (err) {
+    res.status(500).json({ error: 'Kurulu eklentiler yüklenemedi: ' + err.message });
+  }
+});
+
+app.put('/api/marketplace/config/:id', (req, res) => {
+  try {
+    const installed = JSON.parse(fs.readFileSync(INSTALLED_PLUGINS_FILE, 'utf8'));
+    const plugin = installed.find(p => p.id === req.params.id);
+    
+    if (!plugin) {
+      return res.status(404).json({ error: 'Eklenti kurulu değil' });
+    }
+    
+    plugin.config = { ...plugin.config, ...req.body };
+    fs.writeFileSync(INSTALLED_PLUGINS_FILE, JSON.stringify(installed, null, 2), 'utf8');
+    
+    res.json({ ok: true, config: plugin.config });
+  } catch (err) {
+    res.status(500).json({ error: 'Ayarlar kaydedilemedi: ' + err.message });
+  }
+});
+
+app.put('/api/marketplace/toggle/:id', (req, res) => {
+  try {
+    const installed = JSON.parse(fs.readFileSync(INSTALLED_PLUGINS_FILE, 'utf8'));
+    const plugin = installed.find(p => p.id === req.params.id);
+    
+    if (!plugin) {
+      return res.status(404).json({ error: 'Eklenti kurulu değil' });
+    }
+    
+    plugin.enabled = !plugin.enabled;
+    fs.writeFileSync(INSTALLED_PLUGINS_FILE, JSON.stringify(installed, null, 2), 'utf8');
+    
+    res.json({ ok: true, enabled: plugin.enabled });
+  } catch (err) {
+    res.status(500).json({ error: 'Durum değiştirilemedi: ' + err.message });
+  }
+});
+
 app.post('/api/apps/:id/open-terminal', (req, res) => {
   const apps = loadApps();
   const appRecord = apps.find((a) => a.id === req.params.id);
@@ -823,14 +1150,196 @@ app.get('*', (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/ws/terminal' });
 
-wss.on('connection', (ws) => {
-  ws.send(JSON.stringify({ type: 'error', data: 'Terminal özelliği şu anda devre dışı (node-pty sorunu)' }));
-  ws.close();
+// Terminal sessions (sessionId -> { process, appId })
+const terminalSessions = new Map();
+
+wss.on('connection', (ws, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const appId = url.searchParams.get('appId');
+  const sessionId = Math.random().toString(36).substring(7);
+  
+  console.log(`[Terminal] Yeni bağlantı: appId=${appId}, sessionId=${sessionId}`);
+  
+  if (!appId) {
+    console.log('[Terminal] Hata: appId yok');
+    ws.send(JSON.stringify({ type: 'error', data: 'appId gerekli' }));
+    ws.close();
+    return;
+  }
+  
+  const apps = loadApps();
+  const appRecord = apps.find((a) => a.id === appId);
+  if (!appRecord) {
+    console.log(`[Terminal] Hata: Uygulama bulunamadı: ${appId}`);
+    ws.send(JSON.stringify({ type: 'error', data: 'Uygulama bulunamadı' }));
+    ws.close();
+    return;
+  }
+  
+  const repoPath = path.join(REPOS_DIR, appId);
+  if (!fs.existsSync(repoPath)) {
+    console.log(`[Terminal] Hata: Repo dizini yok: ${repoPath}`);
+    ws.send(JSON.stringify({ type: 'error', data: 'Repo dizini bulunamadı' }));
+    ws.close();
+    return;
+  }
+  
+  // Basit bash process - echo'yu frontend'de handle edeceğiz
+  const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/bash';
+  const shellArgs = process.platform === 'win32' ? [] : ['-i'];
+  
+  console.log(`[Terminal] Shell başlatılıyor: shell=${shell}, cwd=${repoPath}`);
+  
+  let shellProcess;
+  try {
+    shellProcess = spawn(shell, shellArgs, {
+      cwd: repoPath,
+      env: { 
+        ...process.env, 
+        ...(appRecord.env || {}), 
+        PS1: '$ ',
+        TERM: 'dumb',
+        SHELL: '/bin/bash'
+      },
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    
+    console.log(`[Terminal] Shell başarıyla oluşturuldu: pid=${shellProcess.pid}`);
+  } catch (err) {
+    console.error('[Terminal] Shell oluşturma hatası:', err);
+    ws.send(JSON.stringify({ type: 'error', data: 'Terminal başlatılamadı: ' + err.message }));
+    ws.close();
+    return;
+  }
+  
+  terminalSessions.set(sessionId, { process: shellProcess, appId });
+  
+  // Shell'den gelen stdout'u WebSocket'e gönder
+  shellProcess.stdout.on('data', (data) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      const text = data.toString();
+      console.log(`[Terminal] stdout: ${text.length} bytes`);
+      ws.send(JSON.stringify({ type: 'data', data: text }));
+    }
+  });
+  
+  // Shell'den gelen stderr'u WebSocket'e gönder
+  shellProcess.stderr.on('data', (data) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      const text = data.toString();
+      console.log(`[Terminal] stderr: ${text.length} bytes`);
+      ws.send(JSON.stringify({ type: 'data', data: text }));
+    }
+  });
+  
+  // Shell kapandığında
+  shellProcess.on('exit', (code) => {
+    console.log(`[Terminal] Shell kapandı: exitCode=${code}, sessionId=${sessionId}`);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'exit', exitCode: code }));
+      ws.close();
+    }
+    terminalSessions.delete(sessionId);
+  });
+  
+  shellProcess.on('error', (err) => {
+    console.error(`[Terminal] Shell hatası: sessionId=${sessionId}`, err);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'error', data: err.message }));
+    }
+  });
+  
+  // WebSocket'ten gelen veriyi shell'e gönder
+  ws.on('message', (msg) => {
+    try {
+      const parsed = JSON.parse(msg);
+      if (parsed.type === 'data' && shellProcess && shellProcess.stdin && !shellProcess.stdin.destroyed) {
+        console.log(`[Terminal] Writing to stdin: ${parsed.data.length} bytes, first char code: ${parsed.data.charCodeAt(0)}`);
+        shellProcess.stdin.write(parsed.data);
+      }
+      // resize mesajlarını yoksay (basit terminal'de gerek yok)
+    } catch (e) {
+      console.error('[Terminal] Message parse error:', e);
+    }
+  });
+  
+  // WebSocket kapandığında shell'i temizle
+  ws.on('close', () => {
+    console.log(`[Terminal] WebSocket kapandı: sessionId=${sessionId}`);
+    if (shellProcess) {
+      shellProcess.kill('SIGTERM');
+    }
+    terminalSessions.delete(sessionId);
+  });
+  
+  ws.on('error', (err) => {
+    console.error(`[Terminal] WebSocket hatası: sessionId=${sessionId}`, err);
+  });
+  
+  // Başlangıç mesajı
+  const welcomeMsg = `Terminal hazır: ${appRecord.name}\r\nDizin: ${repoPath}\r\n\r\n`;
+  ws.send(JSON.stringify({ 
+    type: 'ready', 
+    sessionId,
+    message: welcomeMsg
+  }));
+  console.log(`[Terminal] Başlangıç mesajı gönderildi: sessionId=${sessionId}`);
 });
 
 server.listen(PORT, '0.0.0.0', () => {
   ensureDirs();
   console.log(`App Host Manager: http://localhost:${PORT}`);
   console.log('Tüm ağ arayüzlerinden erişim: http://<bilgisayar-ip>:' + PORT);
-  if (!pty) console.log('Terminal: node-pty yüklü değil, web terminal devre dışı.');
+  console.log('Web Terminal: Aktif (spawn-based)');
+  
+  // Sunucu başlatıldığında çalışan uygulamaları tespit et
+  recoverRunningApps();
 });
+
+// Sunucu başlatıldığında çalışan uygulamaları tespit et
+async function recoverRunningApps() {
+  const apps = loadApps();
+  console.log('Çalışan uygulamalar kontrol ediliyor...');
+  
+  for (const app of apps) {
+    const repoPath = path.join(REPOS_DIR, app.id);
+    if (!fs.existsSync(repoPath)) continue;
+    
+    // Port'u dinleyen bir process var mı kontrol et
+    if (app.port) {
+      await new Promise((resolve) => {
+        const testReq = http.request({
+          hostname: '127.0.0.1',
+          port: app.port,
+          path: '/',
+          method: 'GET',
+          timeout: 1000
+        }, (res) => {
+          // Port açık, uygulama çalışıyor
+          console.log(`✓ ${app.name} çalışıyor (port ${app.port})`);
+          // Marker ekle - process'i takip edemiyoruz ama en azından durumu gösterelim
+          runningProcesses.set(app.id, { 
+            recovered: true, 
+            port: app.port,
+            logStream: null 
+          });
+          resolve();
+        });
+        
+        testReq.on('error', () => {
+          // Port kapalı, uygulama çalışmıyor
+          resolve();
+        });
+        
+        testReq.on('timeout', () => {
+          testReq.destroy();
+          resolve();
+        });
+        
+        testReq.end();
+      });
+    }
+  }
+  
+  console.log(`${runningProcesses.size} çalışan uygulama tespit edildi.`);
+}
